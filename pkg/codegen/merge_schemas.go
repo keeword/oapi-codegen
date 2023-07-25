@@ -3,6 +3,7 @@ package codegen
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -48,7 +49,7 @@ func mergeSchemas(allOf []*openapi3.SchemaRef, path []string) (Schema, error) {
 // valueWithPropagatedRef returns a copy of ref schema with its Properties refs
 // updated if ref itself is external. Otherwise, return ref.Value as-is.
 func valueWithPropagatedRef(ref *openapi3.SchemaRef) (openapi3.Schema, error) {
-	if len(ref.Ref) == 0 || ref.Ref[0] == '#' {
+	if len(ref.Ref) != 0 && ref.Ref[0] == '#' {
 		return *ref.Value, nil
 	}
 
@@ -58,16 +59,75 @@ func valueWithPropagatedRef(ref *openapi3.SchemaRef) (openapi3.Schema, error) {
 	}
 	remoteComponent := pathParts[0]
 
+	checkSameRemote := func(r string) bool {
+		paths := strings.Split(r, "#")
+		if len(paths) == 2 && remoteComponent == paths[0] {
+			return true
+		}
+		return false
+	}
+
 	// remote ref
-	schema := *ref.Value
-	for _, value := range schema.Properties {
-		if len(value.Ref) > 0 && value.Ref[0] == '#' {
-			// local reference, should propagate remote
-			value.Ref = remoteComponent + value.Ref
+	foreach := func(schema *openapi3.Schema) {
+		for _, property := range schema.Properties {
+			if len(property.Ref) > 0 {
+				if property.Ref[0] == '#' {
+					// local reference, should propagate remote
+					property.Ref = remoteComponent + property.Ref
+				} else {
+					// remote reference
+					if checkSameRemote(property.Ref) {
+						continue
+					}
+					dir, _ := filepath.Split(remoteComponent)
+					property.Ref = strings.ReplaceAll(dir+property.Ref, "/./", "/")
+				}
+			}
+			if property.Value.Items != nil && property.Value.Items.Ref != "" {
+				if checkSameRemote(property.Value.Items.Ref) {
+					continue
+				}
+				r := remoteComponent + property.Value.Items.Ref
+				if remoteComponent != "" && property.Value.Items.Ref[0] != '#' {
+					dir, _ := filepath.Split(remoteComponent)
+					r = strings.ReplaceAll(dir+property.Value.Items.Ref, "/./", "/")
+				}
+				property.Value.Items = openapi3.NewSchemaRef(r, property.Value.Items.Value)
+			}
+			for i, prop := range property.Value.Properties {
+				if property.Value.Properties[i].Ref == "" {
+					continue
+				}
+				if checkSameRemote(property.Value.Properties[i].Ref) {
+					continue
+				}
+				r := remoteComponent + prop.Ref
+				if remoteComponent != "" && prop.Ref[0] != '#' {
+					dir, _ := filepath.Split(remoteComponent)
+					r = strings.ReplaceAll(dir+property.Value.Properties[i].Ref, "/./", "/")
+				}
+				property.Value.Properties[i] = openapi3.NewSchemaRef(r, prop.Value)
+			}
 		}
 	}
 
-	return schema, nil
+	foreach(ref.Value)
+
+	for _, item := range ref.Value.AllOf {
+		if item.Ref == "" {
+			foreach(item.Value)
+			continue
+		}
+		if checkSameRemote(item.Ref) {
+			continue
+		}
+		item.Ref = remoteComponent + item.Ref
+		if _, err := valueWithPropagatedRef(item); err != nil {
+			return openapi3.Schema{}, err
+		}
+	}
+
+	return *ref.Value, nil
 }
 
 func mergeAllOf(allOf []*openapi3.SchemaRef) (openapi3.Schema, error) {

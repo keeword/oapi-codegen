@@ -1,0 +1,26 @@
+openapi: 3.0.1
+info:
+  title: Ref
+  version: '1.0'
+components:
+  schemas:
+    Plugin:
+      type: object
+      properties:
+        id:
+          type: string
+    Client:
+      type: object
+      properties:
+        config:
+          allOf:
+            - type: object
+              properties:
+                plugins:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Plugin'
+            - type: object
+              properties:
+                theme:
+                  type: string
